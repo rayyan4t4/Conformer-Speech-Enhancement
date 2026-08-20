@@ -1,6 +1,13 @@
 import os
+import sys
 import argparse
 import time
+
+# Ensure project root is in sys.path regardless of execution directory
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -15,14 +22,14 @@ def parse_args():
     parser.add_argument("--noisy_train_dir", type=str, default=None, help="Path to paired noisy training files (optional)")
     parser.add_argument("--clean_val_dir", type=str, required=True, help="Path to clean validation audio files")
     parser.add_argument("--noisy_val_dir", type=str, default=None, help="Path to paired noisy validation files (optional)")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size per GPU")
     parser.add_argument("--lr", type=float, default=5e-4, help="Peak learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="AdamW weight decay")
     parser.add_argument("--d_model", type=int, default=256, help="Conformer bottleneck dimension")
     parser.add_argument("--num_layers", type=int, default=4, help="Number of Conformer blocks")
     parser.add_argument("--save_dir", type=str, default="./checkpoints", help="Directory to save model checkpoints")
-    parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--use_amp", action="store_true", default=True, help="Enable Automatic Mixed Precision (AMP)")
     return parser.parse_args()
 
@@ -39,13 +46,8 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp
         optimizer.zero_grad(set_to_none=True)
 
         with torch.cuda.amp.autocast(enabled=use_amp and device.type == 'cuda'):
-            # Compute target complex spectrogram
             targ_spec = model.compute_stft(clean_audio)
-            
-            # Forward pass
             pred_audio, pred_spec = model(noisy_audio)
-            
-            # Loss computation
             loss, l_spec, l_time = criterion(pred_audio, clean_audio, pred_spec, targ_spec)
 
         if use_amp and device.type == 'cuda':
@@ -63,8 +65,8 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp
         total_spec += l_spec.item()
         total_time += l_time.item()
 
-        if (step + 1) % 20 == 0 or (step + 1) == len(loader):
-            print(f"  Step [{step+1}/{len(loader)}] | Loss: {loss.item():.4f} (Spec: {l_spec.item():.4f}, Time: {l_time.item():.4f})")
+        if (step + 1) % 25 == 0 or (step + 1) == len(loader):
+            print(f"  Step [{step+1}/{len(loader)}] | Loss: {loss.item():.4f} (Spectral: {l_spec.item():.4f}, Time SI-SNR: {l_time.item():.4f})")
 
     avg_loss = total_loss / len(loader)
     elapsed = time.time() - start_time
@@ -86,7 +88,6 @@ def validate(model, loader, criterion, device):
         loss, _, _ = criterion(pred_audio, clean_audio, pred_spec, targ_spec)
         total_loss += loss.item()
 
-        # Compute SI-SDR Improvement (dB)
         pred_np = pred_audio.cpu().numpy()
         clean_np = clean_audio.cpu().numpy()
         noisy_np = noisy_audio.cpu().numpy()
@@ -118,8 +119,8 @@ def main():
     train_dataset = SpeechEnhancementDataset(clean_dir=args.clean_train_dir, noisy_dir=args.noisy_train_dir, is_train=True)
     val_dataset = SpeechEnhancementDataset(clean_dir=args.clean_val_dir, noisy_dir=args.noisy_val_dir, is_train=False)
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=(device.type == 'cuda'))
 
     print(f"--> Train samples: {len(train_dataset)} | Val samples: {len(val_dataset)}")
     best_si_sdr_gain = -float("inf")

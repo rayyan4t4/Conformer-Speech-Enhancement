@@ -1,6 +1,12 @@
 import os
+import sys
 import argparse
 import numpy as np
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import torch
 from models.unet_conformer import ConformerUNet
 from utils.audio_processing import load_audio_mono, save_audio, generate_spectrogram_plot
@@ -11,28 +17,21 @@ def parse_args():
     parser.add_argument("--input", type=str, required=True, help="Input noisy WAV file")
     parser.add_argument("--output", type=str, default="enhanced_output.wav", help="Output enhanced WAV file")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint. If none, runs initialized model.")
-    parser.add_argument("--save_plot", type=str, default=None, help="Path to save spectrogram comparison plot (e.g. plot.png)")
+    parser.add_argument("--save_plot", type=str, default=None, help="Path to save spectrogram comparison plot")
     parser.add_argument("--device", type=str, default="cpu", help="Compute device ('cpu' or 'cuda')")
     return parser.parse_args()
 
 
 @torch.no_grad()
 def enhance_audio_file(model, input_path: str, output_path: str, device: str = "cpu", plot_path: str = None):
-    # 1. Load Audio
     noisy_audio, sr = load_audio_mono(input_path, target_sr=16000)
-    
-    # 2. To Tensor
     audio_tensor = torch.from_numpy(noisy_audio).unsqueeze(0).to(device)
-    
-    # 3. Model Forward
     enhanced_tensor, _ = model(audio_tensor)
     enhanced_audio = enhanced_tensor.squeeze(0).cpu().numpy()
     
-    # 4. Save Audio
     save_audio(output_path, enhanced_audio, sr=16000)
     print(f"✅ Enhanced audio saved to: {output_path}")
 
-    # 5. Save Spectrogram Plot if requested
     if plot_path:
         fig = generate_spectrogram_plot(noisy_audio, enhanced_audio, sr=16000)
         fig.savefig(plot_path, dpi=300, bbox_inches='tight')

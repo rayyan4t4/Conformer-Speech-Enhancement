@@ -1,7 +1,13 @@
 import os
+import sys
 import time
 import argparse
 import numpy as np
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import torch
 from torch.utils.data import DataLoader
 from models.unet_conformer import ConformerUNet
@@ -25,7 +31,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"--> Running Evaluation on: {device}")
 
-    # Load Model
     model = ConformerUNet(d_model=args.d_model, num_conformer_layers=args.num_layers).to(device)
     state_dict = torch.load(args.checkpoint, map_location=device)
     model.load_state_dict(state_dict)
@@ -48,7 +53,6 @@ def main():
         audio_dur = noisy_audio.shape[-1] / 16000.0
         total_audio_duration += audio_dur
 
-        # Measure Latency
         t0 = time.perf_counter()
         enh_audio, _ = model(noisy_audio)
         if device.type == 'cuda':
@@ -60,18 +64,15 @@ def main():
         c_np = clean_audio.squeeze(0).cpu().numpy()
         e_np = enh_audio.squeeze(0).cpu().numpy()
 
-        # SI-SDR
         noisy_sisdr_list.append(compute_si_sdr(n_np, c_np))
         enh_sisdr_list.append(compute_si_sdr(e_np, c_np))
 
-        # PESQ
         p_n = compute_pesq_score(c_np, n_np, 16000)
         p_e = compute_pesq_score(c_np, e_np, 16000)
         if not np.isnan(p_n) and not np.isnan(p_e):
             noisy_pesq_list.append(p_n)
             enh_pesq_list.append(p_e)
 
-        # STOI
         s_n = compute_stoi_score(c_np, n_np, 16000)
         s_e = compute_stoi_score(c_np, e_np, 16000)
         if not np.isnan(s_n) and not np.isnan(s_e):
