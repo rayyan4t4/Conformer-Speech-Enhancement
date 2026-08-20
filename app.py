@@ -1,10 +1,17 @@
 import os
+import sys
 import time
 import tempfile
 import numpy as np
+import scipy.signal
+
+# Auto-locate project root
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import gradio as gr
 import matplotlib.pyplot as plt
-import scipy.signal
 
 # Attempt to import torch and model; provide robust demo fallback if run without GPU/weights
 try:
@@ -25,30 +32,35 @@ def get_model():
     global MODEL
     if MODEL is None and TORCH_AVAILABLE:
         MODEL = ConformerUNet(d_model=256, num_conformer_layers=4).to(DEVICE)
-        checkpoint_path = "checkpoints/best_model.pth"
-        if os.path.exists(checkpoint_path):
-            state_dict = torch.load(checkpoint_path, map_location=DEVICE)
-            MODEL.load_state_dict(state_dict)
-            print(f"--> Loaded trained checkpoint: {checkpoint_path}")
-        else:
+        
+        # Check potential checkpoint paths
+        candidate_paths = [
+            "checkpoints/best_model.pth",
+            "best_model.pth",
+            os.path.join(PROJECT_ROOT, "checkpoints", "best_model.pth"),
+            os.path.join(PROJECT_ROOT, "best_model.pth")
+        ]
+        loaded = False
+        for p in candidate_paths:
+            if os.path.exists(p):
+                state_dict = torch.load(p, map_location=DEVICE)
+                MODEL.load_state_dict(state_dict)
+                print(f"--> Loaded trained checkpoint: {p}")
+                loaded = True
+                break
+        if not loaded:
             print("--> Running with Conformer U-Net initial architecture.")
         MODEL.eval()
     return MODEL
 
 
 def process_audio(audio_input, denoise_strength=1.0):
-    """
-    Main Gradio inference function.
-    Takes input audio path/tuple from Gradio, performs speech enhancement, 
-    and returns enhanced audio, spectrogram plot, and latency metrics.
-    """
     if audio_input is None:
         return None, None, "⚠️ Please upload or record audio first."
 
     # Gradio audio input can be a filepath (str) or a tuple (sample_rate, numpy_array)
     if isinstance(audio_input, tuple):
         sr, audio_data = audio_input
-        # Convert integer types to float [-1.0, 1.0]
         if audio_data.dtype in [np.int16, np.int32]:
             audio_data = audio_data.astype(np.float32) / np.iinfo(audio_data.dtype).max
         else:
@@ -89,24 +101,21 @@ def process_audio(audio_input, denoise_strength=1.0):
     latency_ms = (t1 - t0) * 1000.0
     rtf = (t1 - t0) / audio_len_sec if audio_len_sec > 0 else 0.0
 
-    # Ensure audio length matches
     enhanced_audio = enhanced_audio[:len(audio_data)]
     enhanced_audio = np.clip(enhanced_audio, -1.0, 1.0)
 
     # Compute Spectrogram Plot
     fig = generate_spectrogram_plot(audio_data, enhanced_audio, sr=16000)
 
-    # Save enhanced audio to temp file for Gradio playback
     temp_dir = tempfile.mkdtemp()
     out_path = os.path.join(temp_dir, "enhanced_speech.wav")
     save_audio(out_path, enhanced_audio, sr=16000)
 
-    # Performance Summary Card
     metrics_text = f"""
     ### ⚡ Inference & Performance Metrics:
     - **Audio Duration:** `{audio_len_sec:.2f} seconds`
     - **Inference Latency:** `{latency_ms:.2f} ms`
-    - **Real-Time Factor (RTF):** `{rtf:.4f}` (Values `< 1.0` denote faster than real-time)
+    - **Real-Time Factor (RTF):** `{rtf:.4f}` (Values `< 1.0` indicate real-time streaming capability)
     - **Compute Platform:** `{DEVICE.upper()}`
     - **Sampling Rate:** `16,000 Hz (Wideband Speech)`
     """
@@ -114,7 +123,6 @@ def process_audio(audio_input, denoise_strength=1.0):
     return out_path, fig, metrics_text
 
 
-# Build Gradio Interface
 custom_css = """
 .gradio-container { max-width: 1050px !important; margin: auto; }
 h1 { text-align: center; color: #1E293B; font-weight: 800; }
@@ -125,13 +133,6 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft(primary_hue="blue", neutral_
         """
         # 🎙️ Conformer U-Net: Real-Time Speech Enhancement
         ### *Complex Spectral Mapping with Dual-Path Attention for Acoustic Noise Suppression*
-        [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C.svg)](https://pytorch.org/)
-        [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-        [![arXiv](https://img.shields.io/badge/arXiv-2005.08100-B31B1B.svg)](https://arxiv.org/abs/2005.08100)
-        
-        This live research demo reconstructs clean wideband speech from heavily corrupted acoustic environments 
-        (e.g., street noise, cafeteria babble, air conditioning, white/pink noise) using a **Conformer U-Net** with 
-        **Bounded Complex Ratio Masking (cRM)**.
         """
     )
 
@@ -187,14 +188,6 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft(primary_hue="blue", neutral_
                 - **Macaron-style Feed-Forward Networks (FFN)** with Swish activations.
                 - **Multi-Head Self-Attention (MHSA)** for global contextual formant modeling.
                 - **Depthwise Separable Convolutions** for fine-grained local harmonic patterns.
-                
-                #### 3. Quantitative Benchmarks (VoiceBank-DEMAND Test Set)
-                | Architecture | PESQ (WB) | STOI | SI-SDR (dB) | Parameters | Real-Time Factor (RTF) |
-                | :--- | :---: | :---: | :---: | :---: | :---: |
-                | **Noisy Baseline** | 1.97 | 0.92 | 8.45 dB | - | - |
-                | **Standard U-Net (Mag Only)** | 2.68 | 0.94 | 14.10 dB | 4.2M | 0.021 |
-                | **Dual-Path RNN** | 2.89 | 0.95 | 16.32 dB | 3.8M | 0.084 |
-                | **Conformer U-Net (Ours)** | **3.12** | **0.96** | **18.75 dB** | **3.4M** | **0.015** |
                 """
             )
 
