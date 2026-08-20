@@ -1,152 +1,264 @@
-# 🎙️ Conformer U-Net: Real-Time Speech Enhancement & Noise Suppression
+# 🎙️ Conformer Speech Enhancement
 
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C.svg?style=flat&logo=pytorch)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces)
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
+A production-oriented, **fully free-tier deployable** speech enhancement system built around a
+**Conformer** encoder that predicts a complex ratio mask (cRM) for single-channel noise
+suppression. Includes:
 
-> **Research Formulation:** An end-to-end Deep Learning framework for monaural wideband speech enhancement (16 kHz). By combining a **2D Convolutional U-Net** with a **Dual-Path Conformer Attention-Convolution Bottleneck**, the model predicts a **Bounded Complex Ratio Mask (cRM)** over complex STFT representations, jointly recovering magnitude and phase in non-stationary noise environments.
+- 🧠 A complete PyTorch **Conformer model** (medium config, ~12.4M params)
+- 📓 A **single Colab notebook** that downloads the dataset and trains the model end-to-end
+- 🖥️ A **Streamlit web app** (upload / mic recording / example clips) ready for Streamlit
+  Community Cloud
+- 📄 An **IEEE-format LaTeX research paper** describing the method
+- ✅ Tested, modular code: `model/`, `utils/`, `app/`
 
 ---
 
-## 📌 1. Architecture Overview
+## Table of Contents
+
+1. [Architecture Overview](#architecture-overview)
+2. [Project Structure](#project-structure)
+3. [Quick Start](#quick-start)
+4. [Training on Google Colab](#training-on-google-colab)
+5. [Running the Streamlit App Locally](#running-the-streamlit-app-locally)
+6. [Deploying to Streamlit Community Cloud](#deploying-to-streamlit-community-cloud)
+7. [Dataset](#dataset)
+8. [Model Details](#model-details)
+9. [Evaluation Metrics](#evaluation-metrics)
+10. [Research Paper](#research-paper)
+11. [Troubleshooting](#troubleshooting)
+12. [License](#license)
+
+---
+
+## Architecture Overview
 
 ```
-                      +-------------------------------------------------------+
-                      |               Input Noisy Waveform x(t)               |
-                      +-------------------------------------------------------+
-                                                 |
-                                         [ Complex STFT ]
-                                                 v
-                      +-------------------------------------------------------+
-                      |         Complex Spectrogram X = X_r + i X_i           |
-                      |                 (B, 2, 257, T)                        |
-                      +-------------------------------------------------------+
-                                                 |
-                        +------------------------v-------------------------+
-                        |  2D Conv Encoder (5 Layers: 256 -> 128 -> ... 8) | ----+ (Skip 1-4)
-                        +--------------------------------------------------+     |
-                                                 |                               |
-                                      [ Flatten & Linear Proj ]                  |
-                                                 v                               |
-                        +--------------------------------------------------+     |
-                        |      Conformer Bottleneck (4 Stacked Blocks)     |     |
-                        |  • Macaron FFN (Swish)                           |     |
-                        |  • Multi-Head Self-Attention (MHSA, 4 heads)     |     |
-                        |  • Depthwise Separable Conv (Kernel = 31)        |     |
-                        +--------------------------------------------------+     |
-                                                 |                               |
-                                      [ Reshape & Linear Proj ]                  |
-                                                 v                               |
-                        +--------------------------------------------------+     |
-                        |  2D Transposed Conv Decoder with Skip Concat     | <---+
-                        +--------------------------------------------------+
-                                                 |
-                                     [ Tanh Bounded Mask M ]
-                                                 v
-                        +--------------------------------------------------+
-                        |     Complex Multiplication (cRM Formulation)     |
-                        |     S_hat_r = M_r * X_r - M_i * X_i              |
-                        |     S_hat_i = M_r * X_i + M_i * X_r              |
-                        +--------------------------------------------------+
-                                                 |
-                                         [ Inverse STFT ]
-                                                 v
-                      +-------------------------------------------------------+
-                      |             Enhanced Output Waveform s_hat(t)         |
-                      +-------------------------------------------------------+
+Noisy waveform
+      │
+      ▼
+   STFT (n_fft=512, hop=128, 16kHz)
+      │
+      ▼
+ log1p(|STFT|)  ──────────────►  Conformer Encoder (8 blocks, d_model=256)
+                                        │
+                                        ▼
+                          Linear head → complex ratio mask (real, imag)
+                                        │
+                                        ▼
+                       Mask applied to noisy complex STFT
+                                        │
+                                        ▼
+                                    ISTFT
+                                        │
+                                        ▼
+                              Enhanced waveform
+```
+
+Each Conformer block follows the standard macaron structure:
+`FeedForward → Multi-Head Self-Attention → Convolution Module → FeedForward → LayerNorm`,
+combining the local modeling strength of convolutions with the long-range context of
+self-attention — well suited to speech, which has both fine-grained (phoneme-level) and
+long-range (prosody-level) structure.
+
+---
+
+## Project Structure
+
+```
+conformer-speech-enhancement/
+├── app/
+│   └── streamlit_app.py          # Streamlit web app (upload / mic / examples)
+├── model/
+│   ├── conformer.py               # Conformer encoder + speech enhancement head
+│   ├── dataset.py                 # VoiceBank+DEMAND dataset loader
+│   ├── inference.py                # Inference wrapper (chunked, overlap-add)
+│   └── losses.py                   # SI-SDR + spectral losses
+├── utils/
+│   └── audio.py                    # STFT/ISTFT, I/O, feature helpers
+├── notebook/
+│   └── Conformer_Speech_Enhancement_Training.ipynb   # Full Colab training pipeline
+├── paper/
+│   ├── paper.tex                   # IEEE-format research paper (LaTeX source)
+│   └── paper.pdf                   # Compiled paper
+├── assets/
+│   └── examples/                   # Bundled example noisy clips for the demo
+├── checkpoints/                    # Trained model weights go here (.pt)
+├── requirements.txt                 # App dependencies (CPU-only, free-tier friendly)
+├── packages.txt                     # System packages for Streamlit Cloud (apt)
+├── .streamlit/config.toml           # Streamlit theming
+└── README.md
 ```
 
 ---
 
-## 🔬 2. Mathematical Formulation
+## Quick Start
 
-### 2.1 Complex Spectral Masking
-Given a noisy speech signal $x(t) = s(t) + n(t)$, its complex Short-Time Fourier Transform is represented as:
-$$X(f, t) = X_r(f, t) + i X_i(f, t)$$
-
-The network estimates a complex ratio mask $M(f, t) = M_r(f, t) + i M_i(f, t)$ bounded by $K = 1.0$:
-$$M_r = K \cdot \tanh(O_r), \quad M_i = K \cdot \tanh(O_i)$$
-
-The enhanced complex spectrum $\hat{S}(f, t)$ is computed via complex multiplication:
-$$\hat{S}_r = M_r X_r - M_i X_i, \quad \hat{S}_i = M_r X_i + M_i X_r$$
-
-### 2.2 Objective Loss Functions
-The network is trained using a composite hybrid loss combining compressed spectral distance and time-domain scale-invariance:
-$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{spec}} + \lambda \mathcal{L}_{\text{SI-SNR}}$$
-
-1. **Power-Law Compressed Spectral Loss ($\gamma = 0.3$):**
-   $$\mathcal{L}_{\text{spec}} = \alpha \cdot \frac{1}{FT} \| |\hat{S}|^\gamma - |S|^\gamma \|_1 + (1-\alpha) \cdot \frac{1}{FT} \| |\hat{S}|^\gamma e^{i\hat{\theta}} - |S|^\gamma e^{i\theta} \|_1$$
-2. **Time-Domain SI-SNR Loss:**
-   $$\text{SI-SNR}(s, \hat{s}) = 10 \log_{10} \left( \frac{\| s_{\text{target}} \|^2}{\| e_{\text{noise}} \|^2 + \epsilon} \right), \quad \mathcal{L}_{\text{SI-SNR}} = -\text{SI-SNR}$$
-
----
-
-## 📊 3. Benchmark Results (VoiceBank-DEMAND Test Set)
-
-| Method / Architecture | Domain | PESQ (WB) | STOI | SI-SDR (dB) | Params (M) | RTF (CPU) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Noisy Baseline** | Time | 1.97 | 0.92 | 8.45 dB | — | — |
-| **Spectral Subtraction** | Magnitude | 2.24 | 0.91 | 9.80 dB | — | 0.002 |
-| **Standard Conv U-Net** | Magnitude | 2.68 | 0.94 | 14.10 dB | 4.2M | 0.021 |
-| **Dual-Path RNN (DPRNN)**| Complex | 2.89 | 0.95 | 16.32 dB | 3.8M | 0.084 |
-| **Conformer U-Net (Ours)**| **Complex** | **3.12** | **0.96** | **18.75 dB** | **3.4M** | **0.015** |
-
-*Real-Time Factor (RTF) measured on Intel i7 CPU / Apple M-series (<1.0 indicates real-time streaming capability).*
-
----
-
-## 🚀 4. Quickstart & Usage
-
-### 4.1 Installation
 ```bash
-git clone https://github.com/your-username/Conformer-Speech-Enhancement.git
-cd Conformer-Speech-Enhancement
+# 1. Clone / unzip the project
+cd conformer-speech-enhancement
+
+# 2. Create a virtual environment
+python3 -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
+
+# 3. Install dependencies
 pip install -r requirements.txt
-```
 
-### 4.2 Training on Google Colab or Local GPU
-```bash
-python train.py \
-    --clean_train_dir ./data/clean_train \
-    --noisy_train_dir ./data/noisy_train \
-    --clean_val_dir ./data/clean_val \
-    --noisy_val_dir ./data/noisy_val \
-    --epochs 50 \
-    --batch_size 16 \
-    --lr 0.0005 \
-    --save_dir ./checkpoints
-```
+# 4. Train the model (see below) OR use your own checkpoint at
+#    checkpoints/conformer_se_best.pt
 
-### 4.3 Benchmark Evaluation
-```bash
-python evaluate.py \
-    --checkpoint ./checkpoints/best_model.pth \
-    --clean_test_dir ./data/clean_test \
-    --noisy_test_dir ./data/noisy_test
-```
-
-### 4.4 Command-Line Inference & Spectrogram Generation
-```bash
-python inference.py \
-    --input sample_noisy.wav \
-    --output sample_enhanced.wav \
-    --checkpoint ./checkpoints/best_model.pth \
-    --save_plot comparison_spectrogram.png
+# 5. Run the app
+streamlit run app/streamlit_app.py
 ```
 
 ---
 
-## 🌐 5. Live Hugging Face Spaces Deployment (2-Minute Guide)
+## Training on Google Colab
 
-1. Go to [Hugging Face Spaces](https://huggingface.co/spaces) and click **Create new Space**.
-2. Set **SDK** to **Gradio**.
-3. Clone or upload the repository files (`app.py`, `models/`, `utils/`, `requirements.txt`, `checkpoints/best_model.pth`).
-4. The web application will automatically build and launch live with a public URL!
+All training — **including dataset download** — happens in a single notebook:
+`notebook/Conformer_Speech_Enhancement_Training.ipynb`.
+
+1. Upload this project as a `.zip` to Colab (or push to GitHub and `git clone` it — both
+   options are in the notebook).
+2. Open the notebook in Google Colab.
+3. `Runtime → Change runtime type → T4 GPU` (free tier).
+4. Run all cells top-to-bottom. The notebook will:
+   - Install dependencies
+   - Download **VoiceBank+DEMAND** directly from the University of Edinburgh DataShare
+     (with an automatic HuggingFace mirror fallback)
+   - Build the medium Conformer model
+   - Train with **mixed precision**, **gradient clipping**, and a **cosine LR schedule**
+   - **Checkpoint to Google Drive** every N steps so training survives Colab disconnects,
+     and **automatically resumes** on re-run
+   - Evaluate with **PESQ**, **STOI**, and **SI-SDR**
+   - Export `conformer_se_best.pt` and re-package the project as a ready-to-deploy zip
+
+Training the medium config for 60 epochs on VoiceBank+DEMAND takes roughly **6–10 hours**
+on a free T4 — comfortably splittable across multiple free Colab sessions thanks to
+checkpoint resuming.
+
+### Adjusting for your compute budget
+
+All hyperparameters live in the `CONFIG` dict in the notebook. To train faster (at some
+quality cost), reduce `num_layers` (e.g. 6), `d_model` (e.g. 192), or `epochs`.
 
 ---
 
-## 📜 6. References
-- Gulati, A., et al. (2020). *Conformer: Convolution-augmented Transformer for Speech Recognition*. Interspeech 2020.
-- Williamson, D. S., et al. (2016). *Complex Ratio Masking for Monaural Speech Separation*. IEEE/ACM TASLP.
-- Valentini-Botinhao, C., et al. (2016). *Investigating RNN-based speech enhancement methods for noise-robust Text-to-Speech*. SSW9.
+## Running the Streamlit App Locally
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+The app looks for a checkpoint at `checkpoints/conformer_se_best.pt` by default. Override
+with an environment variable if needed:
+
+```bash
+export CONFORMER_SE_CHECKPOINT=/path/to/your_checkpoint.pt
+streamlit run app/streamlit_app.py
+```
+
+**Features:**
+- 📁 Upload an audio file (wav/mp3/flac/ogg/m4a)
+- 🎤 Record directly from your microphone (via `st.audio_input`)
+- 🧪 Try bundled synthetic example clips (drop your own into `assets/examples/`)
+- 📊 Side-by-side waveform + spectrogram comparison
+- ⬇️ Download the enhanced audio
+
+The app processes audio in **overlapping chunks** with cross-fade blending, so it stays
+memory-friendly on free hosting tiers even for long recordings, and runs entirely on **CPU**
+(no GPU needed for inference).
+
+---
+
+## Deploying to Streamlit Community Cloud
+
+1. Push this repository to GitHub (public or private).
+2. Make sure your trained checkpoint is at `checkpoints/conformer_se_best.pt` and committed
+   (use [Git LFS](https://git-lfs.github.com/) if it exceeds GitHub's 100MB file limit — the
+   medium model checkpoint is typically ~50MB, so plain Git usually works fine).
+3. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub, and click
+   **"New app"**.
+4. Point it at your repo, branch, and set the main file path to `app/streamlit_app.py`.
+5. Deploy — Streamlit Cloud will automatically install `requirements.txt` and `packages.txt`.
+
+Everything used (Streamlit Cloud hosting, CPU PyTorch, the dataset, and the notebook's free
+Colab GPU) is free of charge.
+
+---
+
+## Dataset
+
+**VoiceBank+DEMAND** (Valentini-Botinhao et al., 2016) — the standard benchmark corpus for
+single-channel speech enhancement:
+
+- 28 speakers, ~11,572 training utterances (clean + noisy pairs at multiple SNRs: 0, 5, 10,
+  15 dB), mixed with 10 real-world DEMAND noise types
+- 2 held-out speakers, 824 test utterances at SNRs of 2.5, 7.5, 12.5, 17.5 dB with 5 unseen
+  noise types
+- Distributed freely (CC license) via the University of Edinburgh DataShare — no
+  registration or payment required
+- Downloaded automatically by the training notebook (~2.5 GB)
+
+---
+
+## Model Details
+
+| Hyperparameter        | Value              |
+|------------------------|--------------------|
+| Sample rate            | 16 kHz             |
+| STFT window / hop      | 512 / 128 samples  |
+| Conformer layers       | 8                  |
+| Model dimension        | 256                |
+| Attention heads        | 4                  |
+| Conv kernel size       | 31                 |
+| Feed-forward expansion | 4×                 |
+| Mask type              | Complex ratio mask (bounded tanh, K=3) |
+| Parameters             | ~12.4M             |
+| Loss                   | SI-SDR (time) + L1 spectral (magnitude + real/imag) |
+
+This configuration is deliberately sized to train comfortably on a **free Colab T4 GPU**
+while giving noticeably better quality than a "small/fast" configuration.
+
+---
+
+## Evaluation Metrics
+
+The notebook reports standard objective speech-quality metrics on the VoiceBank+DEMAND test
+set:
+
+- **PESQ** (Perceptual Evaluation of Speech Quality, wideband)
+- **STOI** (Short-Time Objective Intelligibility)
+- **SI-SDR** (Scale-Invariant Signal-to-Distortion Ratio, dB)
+
+---
+
+## Research Paper
+
+An IEEE-format LaTeX paper describing the method, architecture, training setup, and results
+is provided in `paper/paper.tex` (with a compiled `paper/paper.pdf`). To recompile:
+
+```bash
+cd paper
+pdflatex paper.tex
+pdflatex paper.tex   # run twice for references/TOC
+```
+
+---
+
+## Troubleshooting
+
+| Issue | Fix |
+|---|---|
+| `FileNotFoundError: No clean wav files found` | Run the dataset-download cell in the notebook before training. |
+| Colab disconnects mid-training | Just re-run the notebook — training resumes automatically from the last Google Drive checkpoint. |
+| Streamlit app shows "No trained checkpoint found" | Copy `conformer_se_best.pt` into `checkpoints/`, or set `CONFORMER_SE_CHECKPOINT`. |
+| Out-of-memory on Colab | Lower `batch_size` or `segment_seconds` in the notebook `CONFIG` dict. |
+| Slow inference on Streamlit Cloud | Increase the sidebar "processing chunk size"; CPU inference is real-time-ish but not instant for very long files. |
+
+---
+
+## License
+
+MIT License — see `LICENSE`. VoiceBank+DEMAND is distributed under its own license terms by
+the University of Edinburgh; please review before commercial use.

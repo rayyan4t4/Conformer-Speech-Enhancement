@@ -1,10 +1,12 @@
-torch>=2.0.0
-torchaudio>=2.0.0
-gradio>=4.0.0
-numpy>=1.22.0
-scipy>=1.9.0
-matplotlib>=3.6.0
-soundfile>=0.12.1
-pesq>=0.0.4
-pystoi>=0.3.3
-tqdm>=4.65.0
+# Streamlit Cloud / local app requirements
+# Pinned to versions that install cleanly on Streamlit Community Cloud (free tier).
+# CPU-only torch build keeps the deploy small and within free memory limits.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+streamlit==1.38.0
+torch==2.3.1
+numpy==1.26.4
+soundfile==0.12.1
+librosa==0.10.2.post1
+matplotlib==3.9.0
+scipy==1.13.1
